@@ -1,0 +1,137 @@
+%% 4th order Runge Kutta method, for LLG calaulation in PMA MTJ
+% call this function using: [,]=rk4_4llg(,)
+
+%zzf,Jan.16.2016
+%1. add in torque efficiency slection, same with rk4_4llg_IMA.m
+%zzf,Feb.20.2016
+%1. change mm(3) in spin torque efficiency
+%zzf,March.18.2016
+%1.divide 2 in the expression of b. 
+%% input
+% ts is time step, unit [s]
+% num_step is total number of steps
+% m_init is initial magnetization, it is a 1-by-3 matrix, unit vector
+% Ms: saturation magnetization, unit [emu/cm3]
+% Hk: uniaxial anisotropy field, 1-by-3 vector, unit [tesla]
+% Hext: applied field, 1-by-3 vector, unit [tesla]
+% alpha: damping constant
+% P1,P2: polarization of free layer and pinned layer
+% p: magnetization of pinned layer, unit 1-by-3 vector
+% Ie: magnetitude of charge current, unit [Ampere]
+% dimension FL_length,FL_width,FL_thickness, unit [nm]
+
+%% output
+%mmx,mmy,mmz: magnetization component, unit vector
+%tt: simulation time list, unit [ns]
+%Icri: critical current for switching unit:[Ampere]
+
+
+%function [mmx,mmy,mmz,t]=rk4_4llg(ts,t0,m,sz,Hk,alpha,va_one,p,Je,Hd,Hext)
+function [mmx,mmy,mmz,tt,Icri]=rk4_4llg_PMA(ts,num_step,m_init,Ms,Hk,Hext,...
+    alpha,P1,P2,p,Ie,FL_length,FL_width,FL_thickness)
+%% constant
+g = 0; % Gyromagnetic ratio [(rad)/(T.s)]
+e=0;%coulombs
+mu_0=0;%Vacumn permeability N/A2 
+mu_b=0;%Erg/G
+hbar=0;%planck constant [eV.s]
+load('constants.mat');
+%% parameters
+%Hd=4*pi*Ms*1e-4; %Tesla
+Hd=0;
+tau_c=(g*Hk(3))/(1+alpha^2); %natural time constant 1/s
+ts1=ts*tau_c; % dimensionless time step
+volume=FL_length*FL_width*FL_thickness*1e-21;%[cm3]
+cross_area=FL_length*FL_width*1e-14;%[cm2]
+Je=Ie/cross_area;%[Ampere/cm2]
+Icri=2*0.1*alpha*Ms*(volume*1e-6)*(Hk(3)+Hd+Hext(3))*1e4/hbar;%[Ampere]
+
+m01=m_init;
+ct1=1; %count 1
+n=ts1;
+sz=num_step;
+t=zeros(1,sz);
+mmx=zeros(sz,1);
+mmy=zeros(sz,1);
+mmz=zeros(sz,1);
+efficiencyselect=4;
+
+while ct1<sz
+        
+    mmx(1,1)=m01(1);mmy(1,1)=m01(2);mmz(1,1)=m01(3);
+    mm=[mmx(ct1,1),mmy(ct1,1),mmz(ct1,1)];   
+    
+    hk=[0,0,1].*mm; %anisotropy field
+    hd=-[0,0,Hd/Hk(3)*mm(3)]; %demagnetizing field
+    hext=Hext/Hk(3);
+    hh=hk+hd+hext; %total field
+    %hh=hk;
+    switch efficiencyselect
+        case 1
+            b=1/(-4+((1+P)^3)*(3+mm(3))/(4*(P^(3/2)))); 
+            %Slonswski torque efficiency for GMR
+        case 2
+            b=P1/(1+(P1^2)*mm(3));
+            %Slonswski torque efficiency for TMR 
+        case 3
+            b=0.8; % fixed torque efficiency
+        case 4
+            P_PL=P1;P_FL=P2;
+            Lambda_PL=2;Lambda_FL=2;
+            Kplus=P_PL*(Lambda_PL^2)*sqrt((Lambda_FL^2+1)/(Lambda_PL^2+1))+...
+                P_FL*(Lambda_FL^2)*sqrt((Lambda_PL^2-1)/(Lambda_FL^2-1));
+            Kminus=P_PL*(Lambda_PL^2)*sqrt((Lambda_FL^2+1)/(Lambda_PL^2+1))-...
+                P_FL*(Lambda_FL^2)*sqrt((Lambda_PL^2-1)/(Lambda_FL^2-1));
+            Aplus=sqrt((Lambda_FL^2+1)*(Lambda_PL^2+1));
+            Aminus=sqrt((Lambda_FL^2-1)*(Lambda_PL^2-1));
+            b=Kplus/(Aplus+Aminus*(mm(3)))+Kminus/(Aplus-Aminus*(mm(3)));
+    end
+    
+    %% theoretical equation for Jp, spin torque efficiency
+    ge=2;
+    Jp_theory=g*e*FL_thickness*(1e-7)*Ms/ge/mu_b*abs(Hk(3)); %spin torque coefficient 
+    
+    %% unit convension:
+    %e_tmp:[e],unit electron charge
+    %hbar_tmp:[ev.s]
+    %d_tmp:[m],FL thickness
+    %Hk_tmp:[Gauss]
+    e_tmp=1;%[e],
+    hbar_tmp=hbar;
+    t_tmp=FL_thickness*1e-9; %nm-->m
+    Hk_tmp=abs(Hk(3))*1e4;%Tesla-->Gauss
+    Jp=(1e-4)*Hk_tmp*e_tmp*t_tmp*Ms/(hbar_tmp*10);%[A/cm2]
+    
+    beta=Je/Jp*b/2;
+    
+    t(1,1)=0;
+    t(1,ct1+1)=t(1,ct1)+n;
+    kk1=feval(@(t,m) LLG_solver(ts,m),n,mm);
+    kk2=feval(@(t,m) LLG_solver(ts,m),n/2,mm+kk1*n/2);
+    kk3=feval(@(t,m) LLG_solver(ts,m),n/2,mm+kk2*n/2);
+    kk4=feval(@(t,m) LLG_solver(ts,m),n,mm+kk3*n);
+    
+    mn=mm+n/6*(kk1+2*kk2+2*kk3+kk4);
+    mmx(ct1+1,1)=mn(1);mmy(ct1+1,1)=mn(2);mmz(ct1+1,1)=mn(3);
+
+    ct1=ct1+1;
+end
+tt=t/tau_c*1e9;%unit[ns]
+%% nested function
+function dmdt=LLG_solver(~,m)
+%% LLG equation with precession term, damping term, spin current
+
+% call this function by feval(@(t,m) LLG_solver(t,m,Hk,alpha),t0,m0)
+% t0 is the initial value of t
+% m0 is the initial value of m
+
+
+dmdt=-cross(m,hh)-alpha*cross(m,cross(m,hh))-beta*cross(m,...
+    cross(m,p))+alpha*beta*cross(m,p);
+
+end
+
+
+end
+
+
